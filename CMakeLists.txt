@@ -13,6 +13,7 @@ endif()
 
 option(KHOJ_BUILD_TESTS "Build the Catch2 test suite" ON)
 option(KHOJ_BUILD_PYTHON "Build the pybind11 extension module" ON)
+option(KHOJ_BUILD_BENCH "Build the benchmark harness" ON)
 option(KHOJ_NATIVE_ARCH "Compile for the host instruction set" OFF)
 
 include(FetchContent)
@@ -42,6 +43,19 @@ if(KHOJ_NATIVE_ARCH)
     target_compile_options(khoj_core PUBLIC
         $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-march=native>
         $<$<CXX_COMPILER_ID:MSVC>:/arch:AVX2>
+    )
+endif()
+
+if(KHOJ_BUILD_BENCH)
+    add_executable(bench_khoj
+        bench/bench_khoj.cpp
+        bench/vecs_io.cpp
+    )
+    target_link_libraries(bench_khoj PRIVATE khoj::core)
+    target_include_directories(bench_khoj PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bench)
+    target_compile_options(bench_khoj PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
     )
 endif()
 

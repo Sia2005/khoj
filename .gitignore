@@ -32,6 +32,7 @@ dist/
 htmlcov/
 
 data/
+bench/results/
 *.index
 *.hnsw
 *.fvecs
