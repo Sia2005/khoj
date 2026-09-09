@@ -6,20 +6,15 @@
 #include <string>
 #include <vector>
 
-namespace khoj {
+#include "khoj/types.hpp"
 
-using VectorId = std::uint64_t;
+namespace khoj {
 
 struct HnswParams {
     std::size_t dimension = 0;
     std::size_t max_neighbors = 16;
     std::size_t ef_construction = 200;
     std::uint64_t seed = 0;
-};
-
-struct SearchResult {
-    VectorId id = 0;
-    float distance = 0.0f;
 };
 
 class HnswIndex {

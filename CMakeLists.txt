@@ -13,10 +13,13 @@ endif()
 
 option(KHOJ_BUILD_TESTS "Build the Catch2 test suite" ON)
 option(KHOJ_BUILD_PYTHON "Build the pybind11 extension module" ON)
+option(KHOJ_NATIVE_ARCH "Compile for the host instruction set" OFF)
 
 include(FetchContent)
+find_package(Threads REQUIRED)
 
 add_library(khoj_core STATIC
+    src/flat_index.cpp
     src/hnsw_index.cpp
 )
 add_library(khoj::core ALIAS khoj_core)
@@ -32,6 +35,15 @@ target_compile_options(khoj_core PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
+
+target_link_libraries(khoj_core PUBLIC Threads::Threads)
+
+if(KHOJ_NATIVE_ARCH)
+    target_compile_options(khoj_core PUBLIC
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-march=native>
+        $<$<CXX_COMPILER_ID:MSVC>:/arch:AVX2>
+    )
+endif()
 
 if(KHOJ_BUILD_PYTHON)
     set(PYBIND11_FINDPYTHON NEW)
@@ -60,7 +72,10 @@ if(KHOJ_BUILD_TESTS)
     )
     FetchContent_MakeAvailable(Catch2)
 
-    add_executable(khoj_tests tests/test_hnsw_index.cpp)
+    add_executable(khoj_tests
+        tests/test_flat_index.cpp
+        tests/test_hnsw_index.cpp
+    )
     target_link_libraries(khoj_tests PRIVATE khoj::core Catch2::Catch2WithMain)
 
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
