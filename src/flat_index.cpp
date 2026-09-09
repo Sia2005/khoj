@@ -66,7 +66,7 @@ bool ranks_before(const SearchResult& left, const SearchResult& right, Metric me
         return metric == Metric::L2 ? left.distance < right.distance
                                     : left.distance > right.distance;
     }
-    return left.id < right.id;
+    return left.label < right.label;
 }
 
 std::string size_mismatch_message(const std::string& operation,
@@ -89,12 +89,12 @@ void FlatIndex::reserve(std::size_t count) {
     data_.reserve(count * dimension_);
 }
 
-VectorId FlatIndex::add(const std::vector<float>& embedding) {
+std::uint64_t FlatIndex::add(const std::vector<float>& embedding) {
     if (embedding.size() != dimension_) {
         throw std::invalid_argument(size_mismatch_message("add", embedding.size(), dimension_));
     }
 
-    const VectorId id = static_cast<VectorId>(size());
+    const std::uint64_t id = static_cast<std::uint64_t>(size());
     data_.insert(data_.end(), embedding.begin(), embedding.end());
     return id;
 }
@@ -134,7 +134,7 @@ std::vector<SearchResult> FlatIndex::search(const std::vector<float>& query, std
         const float score = metric_ == Metric::L2
                                 ? squared_l2(query_data, candidate, dimension_)
                                 : inner_product(query_data, candidate, dimension_);
-        const SearchResult result{static_cast<VectorId>(position), score};
+        const SearchResult result{static_cast<std::uint64_t>(position), score};
 
         if (results.size() < result_count) {
             results.push_back(result);

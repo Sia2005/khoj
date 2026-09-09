@@ -16,7 +16,6 @@ using Catch::Matchers::WithinAbs;
 using khoj::FlatIndex;
 using khoj::Metric;
 using khoj::SearchResult;
-using khoj::VectorId;
 
 namespace {
 
@@ -53,7 +52,7 @@ std::vector<SearchResult> naive_search(const std::vector<float>& data,
             }
         }
         const float score = metric == Metric::L2 ? std::sqrt(total) : total;
-        scored.push_back(SearchResult{static_cast<VectorId>(position), score});
+        scored.push_back(SearchResult{static_cast<std::uint64_t>(position), score});
     }
 
     std::stable_sort(scored.begin(), scored.end(),
@@ -62,7 +61,7 @@ std::vector<SearchResult> naive_search(const std::vector<float>& data,
                              return metric == Metric::L2 ? left.distance < right.distance
                                                          : left.distance > right.distance;
                          }
-                         return left.id < right.id;
+                         return left.label < right.label;
                      });
 
     scored.resize(std::min(k, scored.size()));
@@ -73,7 +72,7 @@ void require_matches_reference(const std::vector<SearchResult>& actual,
                                const std::vector<SearchResult>& expected) {
     REQUIRE(actual.size() == expected.size());
     for (std::size_t position = 0; position < actual.size(); ++position) {
-        REQUIRE(actual[position].id == expected[position].id);
+        REQUIRE(actual[position].label == expected[position].label);
         REQUIRE_THAT(actual[position].distance, WithinAbs(expected[position].distance, 1e-4f));
     }
 }
@@ -89,11 +88,11 @@ TEST_CASE("l2 search returns exact distances in ascending order", "[flat][l2]") 
     const std::vector<SearchResult> results = index.search({0.0f, 0.0f}, 3);
 
     REQUIRE(results.size() == 3);
-    REQUIRE(results[0].id == 0);
+    REQUIRE(results[0].label == 0);
     REQUIRE_THAT(results[0].distance, WithinAbs(0.0f, 1e-6f));
-    REQUIRE(results[1].id == 2);
+    REQUIRE(results[1].label == 2);
     REQUIRE_THAT(results[1].distance, WithinAbs(std::sqrt(2.0f), 1e-6f));
-    REQUIRE(results[2].id == 1);
+    REQUIRE(results[2].label == 1);
     REQUIRE_THAT(results[2].distance, WithinAbs(5.0f, 1e-6f));
 }
 
@@ -106,11 +105,11 @@ TEST_CASE("inner product search returns the largest score first", "[flat][ip]") 
     const std::vector<SearchResult> results = index.search({1.0f, 0.0f, 0.0f}, 3);
 
     REQUIRE(results.size() == 3);
-    REQUIRE(results[0].id == 2);
+    REQUIRE(results[0].label == 2);
     REQUIRE_THAT(results[0].distance, WithinAbs(2.0f, 1e-6f));
-    REQUIRE(results[1].id == 0);
+    REQUIRE(results[1].label == 0);
     REQUIRE_THAT(results[1].distance, WithinAbs(1.0f, 1e-6f));
-    REQUIRE(results[2].id == 1);
+    REQUIRE(results[2].label == 1);
     REQUIRE_THAT(results[2].distance, WithinAbs(0.0f, 1e-6f));
 }
 
@@ -174,8 +173,8 @@ TEST_CASE("equal distances are broken by ascending id", "[flat][search]") {
     const std::vector<SearchResult> results = index.search({1.0f, 1.0f, 1.0f, 1.0f}, 2);
 
     REQUIRE(results.size() == 2);
-    REQUIRE(results[0].id == 0);
-    REQUIRE(results[1].id == 1);
+    REQUIRE(results[0].label == 0);
+    REQUIRE(results[1].label == 1);
 }
 
 TEST_CASE("dimensions that straddle the unrolled tail stay exact", "[flat][simd]") {

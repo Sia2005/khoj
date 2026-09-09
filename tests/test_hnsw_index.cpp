@@ -7,13 +7,23 @@ TEST_CASE("default hnsw params are populated", "[hnsw][params]") {
 
     REQUIRE(params.dimension == 0);
     REQUIRE(params.max_neighbors == 16);
+    REQUIRE(params.max_neighbors_layer0 == 32);
     REQUIRE(params.ef_construction == 200);
-    REQUIRE(params.seed == 0);
+    REQUIRE(params.level_multiplier == 0.0);
+    REQUIRE(params.seed == 42);
+    REQUIRE(params.metric == khoj::Metric::L2);
 }
 
-TEST_CASE("search result defaults to an empty match", "[hnsw][search]") {
-    const khoj::SearchResult result;
+TEST_CASE("construction rejects degenerate parameters", "[hnsw][params]") {
+    khoj::HnswParams params;
+    params.dimension = 0;
+    REQUIRE_THROWS(khoj::HnswIndex{params});
 
-    REQUIRE(result.id == 0);
-    REQUIRE(result.distance == 0.0f);
+    params.dimension = 8;
+    params.max_neighbors = 0;
+    REQUIRE_THROWS(khoj::HnswIndex{params});
+
+    params.max_neighbors = 16;
+    params.ef_construction = 4;
+    REQUIRE_THROWS(khoj::HnswIndex{params});
 }
