@@ -46,3 +46,7 @@ perf.data
 perf.data.old
 callgrind.out.*
 !bench/results/*.csv
+smoke
+build/
+__pycache__/
+.pytest_cache/
