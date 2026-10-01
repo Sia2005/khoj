@@ -7,7 +7,6 @@
 #include <limits>
 #include <queue>
 #include <stdexcept>
-#include <unordered_set>
 
 namespace khoj {
 namespace {
@@ -129,14 +128,13 @@ std::vector<HnswIndex::Candidate> HnswIndex::search_layer(const float* query,
 
     std::priority_queue<Candidate, std::vector<Candidate>, decltype(nearer)> candidates(nearer);
     std::priority_queue<Candidate, std::vector<Candidate>, decltype(farther)> results(farther);
-    std::unordered_set<InternalId> visited;
-    visited.reserve(ef * 8);
+    const VisitedListPool::Lease visited = visited_pool_.acquire(element_count_);
 
     for (const InternalId entry : entry_points) {
         const float distance = distance_to_stored(query, entry);
         candidates.push({distance, entry});
         results.push({distance, entry});
-        visited.insert(entry);
+        visited->mark(entry);
     }
 
     while (results.size() > ef) {
@@ -155,7 +153,7 @@ std::vector<HnswIndex::Candidate> HnswIndex::search_layer(const float* query,
 
         for (std::uint32_t i = 0; i < adjacency_size; ++i) {
             const InternalId neighbor = adjacency[i];
-            if (!visited.insert(neighbor).second) {
+            if (!visited->mark(neighbor)) {
                 continue;
             }
             const float distance = distance_to_stored(query, neighbor);

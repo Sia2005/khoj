@@ -22,6 +22,7 @@ find_package(Threads REQUIRED)
 add_library(khoj_core STATIC
     src/flat_index.cpp
     src/hnsw_index.cpp
+    src/visited_list_pool.cpp
 )
 add_library(khoj::core ALIAS khoj_core)
 
@@ -89,6 +90,7 @@ if(KHOJ_BUILD_TESTS)
     add_executable(khoj_tests
         tests/test_flat_index.cpp
         tests/test_hnsw_index.cpp
+        tests/test_visited_list_pool.cpp
     )
     target_link_libraries(khoj_tests PRIVATE khoj::core Catch2::Catch2WithMain)
 

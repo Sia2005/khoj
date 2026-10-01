@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "khoj/types.hpp"
+#include "khoj/visited_list_pool.hpp"
 
 namespace khoj {
 
@@ -93,6 +94,8 @@ private:
     std::vector<std::vector<std::uint32_t>> degrees_upper_;
 
     std::uint64_t rng_state_ = 0;
+
+    mutable VisitedListPool visited_pool_;
 };
 
 }
