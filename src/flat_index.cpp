@@ -1,5 +1,7 @@
 #include "khoj/flat_index.hpp"
 
+#include "distance_kernels.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -9,57 +11,8 @@ namespace khoj {
 
 namespace {
 
-constexpr std::size_t lane_count = 8;
-
-float squared_l2(const float* __restrict left,
-                 const float* __restrict right,
-                 std::size_t dimension) {
-    float lanes[lane_count] = {};
-    std::size_t index = 0;
-
-    for (; index + lane_count <= dimension; index += lane_count) {
-        for (std::size_t lane = 0; lane < lane_count; ++lane) {
-            const float difference = left[index + lane] - right[index + lane];
-            lanes[lane] += difference * difference;
-        }
-    }
-
-    float total = 0.0f;
-    for (std::size_t lane = 0; lane < lane_count; ++lane) {
-        total += lanes[lane];
-    }
-
-    for (; index < dimension; ++index) {
-        const float difference = left[index] - right[index];
-        total += difference * difference;
-    }
-
-    return total;
-}
-
-float inner_product(const float* __restrict left,
-                    const float* __restrict right,
-                    std::size_t dimension) {
-    float lanes[lane_count] = {};
-    std::size_t index = 0;
-
-    for (; index + lane_count <= dimension; index += lane_count) {
-        for (std::size_t lane = 0; lane < lane_count; ++lane) {
-            lanes[lane] += left[index + lane] * right[index + lane];
-        }
-    }
-
-    float total = 0.0f;
-    for (std::size_t lane = 0; lane < lane_count; ++lane) {
-        total += lanes[lane];
-    }
-
-    for (; index < dimension; ++index) {
-        total += left[index] * right[index];
-    }
-
-    return total;
-}
+using detail::inner_product;
+using detail::squared_l2;
 
 bool ranks_before(const SearchResult& left, const SearchResult& right, Metric metric) {
     if (left.distance != right.distance) {

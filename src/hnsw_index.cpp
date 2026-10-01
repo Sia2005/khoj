@@ -1,5 +1,7 @@
 #include "khoj/hnsw_index.hpp"
 
+#include "distance_kernels.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -13,24 +15,6 @@ namespace {
 
 constexpr std::uint32_t kMagic = 0x4b484f4a;
 constexpr double kMinUniform = 1e-12;
-
-
-float l2_squared(const float* a, const float* b, std::size_t dimension) {
-    float total = 0.0f;
-    for (std::size_t i = 0; i < dimension; ++i) {
-        const float delta = a[i] - b[i];
-        total += delta * delta;
-    }
-    return total;
-}
-
-float negative_inner_product(const float* a, const float* b, std::size_t dimension) {
-    float total = 0.0f;
-    for (std::size_t i = 0; i < dimension; ++i) {
-        total += a[i] * b[i];
-    }
-    return -total;
-}
 
 }
 
@@ -69,8 +53,8 @@ const float* HnswIndex::vector_at(InternalId id) const {
 float HnswIndex::distance_to_stored(const float* query, InternalId target) const {
     const float* stored = vector_at(target);
     return params_.metric == Metric::L2
-        ? l2_squared(query, stored, params_.dimension)
-        : negative_inner_product(query, stored, params_.dimension);
+        ? detail::squared_l2(query, stored, params_.dimension)
+        : -detail::inner_product(query, stored, params_.dimension);
 }
 
 float HnswIndex::distance_between(InternalId left, InternalId right) const {
