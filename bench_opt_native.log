@@ -1,0 +1,10 @@
+nohup: ignoring input
+loaded 1000000 base and 10000 query vectors of dimension 128
+built hnsw over 1000000 vectors in 837.94s
+results:
+  hnsw ef_search=10 threads=1 runs=5 recall@10=0.7688 qps_median=14388.0 peak_rss_mib=1187.3
+  hnsw ef_search=20 threads=1 runs=5 recall@10=0.8782 qps_median=9657.4 peak_rss_mib=1187.3
+  hnsw ef_search=40 threads=1 runs=5 recall@10=0.9500 qps_median=5710.4 peak_rss_mib=1187.3
+  hnsw ef_search=80 threads=1 runs=5 recall@10=0.9843 qps_median=3347.3 peak_rss_mib=1187.5
+  hnsw ef_search=160 threads=1 runs=5 recall@10=0.9957 qps_median=1859.1 peak_rss_mib=1187.5
+  hnsw ef_search=320 threads=1 runs=5 recall@10=0.9987 qps_median=1027.6 peak_rss_mib=1187.5
