@@ -8,12 +8,12 @@ Recall@10 and queries per second on ANN_SIFT1M (1,000,000 base × 10,000 query v
 
 | Index | ef_search | recall@10 | QPS | Build | Index RSS |
 |---|---:|---:|---:|---:|---:|
-| **khoj HNSW** | 10 | **0.7688** | 7,219 | 1,942 s | 679.0 MiB |
-| **khoj HNSW** | 20 | **0.8782** | 4,629 | | |
-| **khoj HNSW** | 40 | **0.9500** | 2,355 | | |
-| **khoj HNSW** | 80 | **0.9843** | 1,197 | | |
-| **khoj HNSW** | 160 | **0.9957** | 799 | | |
-| **khoj HNSW** | 320 | **0.9987** | 430 | | |
+| **khoj HNSW** | 10 | **0.7688** | 9,976 | 1,179 s | 680.6 MiB |
+| **khoj HNSW** | 20 | **0.8782** | 6,616 | | |
+| **khoj HNSW** | 40 | **0.9500** | 4,086 | | |
+| **khoj HNSW** | 80 | **0.9843** | 2,364 | | |
+| **khoj HNSW** | 160 | **0.9957** | 1,337 | | |
+| **khoj HNSW** | 320 | **0.9987** | 735 | | |
 | FAISS HNSW | 10 | 0.7157 | 23,140 | 501 s | 632.8 MiB |
 | FAISS HNSW | 20 | 0.8457 | 14,326 | | |
 | FAISS HNSW | 40 | 0.9337 | 8,215 | | |
@@ -24,9 +24,24 @@ Recall@10 and queries per second on ANN_SIFT1M (1,000,000 base × 10,000 query v
 
 ![recall@10 versus queries per second on SIFT-1M](bench/results/recall_vs_qps.png)
 
-Sources: [`bench/results/khoj_hnsw.csv`](bench/results/khoj_hnsw.csv), [`bench/results/faiss_hnsw.csv`](bench/results/faiss_hnsw.csv), [`bench/results/khoj_flat.csv`](bench/results/khoj_flat.csv).
+All khoj rows are the default build (`KHOJ_NATIVE_ARCH=OFF`, baseline x86-64). The plot also shows khoj HNSW before the optimizations below, and a non-default `-march=native` build.
+
+Sources: [`bench/results/khoj_hnsw_optimized.csv`](bench/results/khoj_hnsw_optimized.csv), [`bench/results/faiss_hnsw.csv`](bench/results/faiss_hnsw.csv), [`bench/results/khoj_flat.csv`](bench/results/khoj_flat.csv); for the plot only, [`bench/results/khoj_hnsw.csv`](bench/results/khoj_hnsw.csv) (before optimization) and [`bench/results/khoj_hnsw_optimized_native.csv`](bench/results/khoj_hnsw_optimized_native.csv) (native build).
 
 The flat index is exhaustive, so its 0.9994 is a property of the ground-truth file rather than of the scan: 137 of the 10,000 queries have an 11th neighbour exactly as close as the 10th, which puts up to 0.00137 of recall@10 beyond reach of any tie-breaking rule. The observed shortfall is 0.00056.
+
+### Optimization
+
+Two changes to `HnswIndex`, measured together: `search_layer` leases a pooled, version-stamped visited list instead of allocating and hashing into a `std::unordered_set` on every call, and HNSW distances go through the flat index's lane-blocked kernels instead of a scalar loop. The graph is unchanged, so **recall@10 is bit-identical across all three builds** at every `ef_search`; only time moved.
+
+| khoj HNSW | Build | QPS @ 10 | 20 | 40 | 80 | 160 | 320 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| before | 1,942 s | 7,219 | 4,629 | 2,355 | 1,197 | 799 | 430 |
+| **optimized (default build)** | **1,179 s** | **9,976** | **6,616** | **4,086** | **2,364** | **1,337** | **735** |
+| optimized, `KHOJ_NATIVE_ARCH=ON` (non-default) | 838 s | 14,388 | 9,657 | 5,710 | 3,347 | 1,859 | 1,028 |
+| recall@10, all three | | 0.7688 | 0.8782 | 0.9500 | 0.9843 | 0.9957 | 0.9987 |
+
+In the default build that is 1.4–2.0× the query throughput and a 1.65× faster build. Compiling with `-march=native` (AVX2 + FMA on this host) takes it to 2.0–2.8× and 2.3×, but the binary then runs only on CPUs with the build host's instruction set, which is why it is not the default. Because both changes landed before either was benchmarked on SIFT-1M, the split between them is not measured.
 
 ### Conditions
 
@@ -35,7 +50,7 @@ The flat index is exhaustive, so its 0.9994 is a property of the ground-truth fi
 | CPU | 12th Gen Intel Core i7-1255U, 6 cores / 12 threads, AVX2 + FMA (no AVX-512) |
 | Memory | 7.6 GiB |
 | OS | Linux 6.6.87.2 (WSL2), Ubuntu 24.04 |
-| Toolchain | GCC 13.3.0, `-O3 -DNDEBUG`, `KHOJ_NATIVE_ARCH=OFF` (baseline x86-64) |
+| Toolchain | GCC 13.3.0, `-O3 -DNDEBUG`, `KHOJ_NATIVE_ARCH=OFF` (baseline x86-64); rows marked native use `KHOJ_NATIVE_ARCH=ON` |
 | Baseline | faiss 1.15.1 (CPU), NumPy 2.5.3, Python 3.12.3 |
 | Threads | **1**, for search and for index construction, on both engines |
 | Runs | 5 per configuration; median reported, min and max kept in the CSV |
@@ -46,7 +61,9 @@ One difference the numbers cannot hide: `bench_khoj` calls `search` once per que
 
 ## Where khoj stands against FAISS
 
-**FAISS is 3.1–4.0× faster at matched `ef_search`, and 2.5–3.2× faster at matched recall.** The likely cause is distance-kernel throughput. FAISS ships hand-written SIMD kernels with runtime dispatch. Khoj's are portable C++ left to the compiler: the flat index uses lane-blocked accumulator loops, and the HNSW index — the one benchmarked here — uses a plain scalar loop over the 128 dimensions. The benchmark build also targets baseline x86-64, not the host's AVX2. That khoj reaches higher recall at every matched `ef_search` argues the graph itself is sound and the cost is per distance evaluation, but no profile has been taken to apportion the gap precisely.
+**FAISS is 1.9–2.3× faster at matched `ef_search`, and 1.6–1.9× faster at matched recall**, down from 3.1–4.0× and 2.5–3.2× before the optimizations above. Matched-recall ratios interpolate the FAISS curve log-linearly at each khoj recall; `ef_search`=320 is left out because khoj's recall there exceeds anything FAISS reached. FAISS also builds its index in 501 s against khoj's 1,179 s.
+
+The gap that remains is most plausibly instruction set and kernel quality. FAISS ships hand-written SIMD kernels and picks AVX2 at runtime on this host. Khoj's kernels — lane-blocked accumulator loops, shared by both indexes — are portable C++ left to the compiler, which in the default baseline x86-64 build can only emit SSE. The non-default native build puts both engines on AVX2 and narrows the gap to 1.4–1.6× at matched `ef_search` and 1.1–1.3× at matched recall (build: 838 s vs 501 s). What is left after that is unapportioned: hand-written versus compiler-vectorised kernels, other per-query costs in the search loop, and the per-call versus batched harness difference noted above. No profile has been taken to separate them.
 
 **Khoj returns higher recall@10 than FAISS at every `ef_search` tested**, by 5.3 points at `ef_search`=10 narrowing to 0.05 points at 320:
 
@@ -54,9 +71,9 @@ One difference the numbers cannot hide: `bench_khoj` calls `search` once per que
 |---|---:|---:|---:|---:|---:|---:|
 | khoj − FAISS (recall@10, points) | +5.31 | +3.26 | +1.63 | +0.68 | +0.20 | +0.05 |
 
-So khoj extracts more recall per unit of `ef_search`, and FAISS extracts far more throughput per unit of work. Matched on recall rather than on `ef_search`, the throughput gap narrows from 3–4× to roughly 2.5–3×, but it does not close. Closing it means writing the SIMD kernels.
+So khoj extracts more recall per unit of `ef_search`, and FAISS extracts more throughput per unit of work. Matched on recall rather than on `ef_search`, the default-build gap narrows from about 2× to 1.6–1.9×, but it does not close. Closing it in the default build means kernels that use AVX2 without `-march=native` — runtime dispatch, as FAISS does.
 
-Both HNSW indexes are worth their build cost against exhaustive search: at `ef_search`=40 khoj answers queries 100× faster than its own flat index for a 4.9-point recall trade.
+Both HNSW indexes are worth their build cost against exhaustive search: at `ef_search`=40 khoj answers queries 174× faster than its own flat index for a 4.9-point recall trade. (The flat index was not re-run; the kernel change only moved its code.)
 
 ## Build
 
@@ -93,9 +110,9 @@ tests/            Catch2 for C++, pytest for the bindings
 
 **`FlatIndex`** stores vectors contiguously in one `std::vector<float>` and scans all of them per query. Exact by construction, and the reference every approximate result is checked against.
 
-**`HnswIndex`** is a flat-array hierarchical graph. Layer 0 adjacency lives in a single `std::vector<InternalId>` of `max_neighbors_layer0` slots per node with a parallel degree array, so a neighbour walk is one indexed load rather than a pointer chase; upper layers are stored per-level in the same shape. Node levels are drawn from an exponential distribution using a seeded xorshift generator, making construction deterministic for a given seed and insertion order. Search descends greedily through the upper layers to find an entry point, then runs a best-first `search_layer` on layer 0 with two heaps and a visited set bounded by `ef_search`. Edges are chosen by the relative-neighbourhood heuristic — a candidate is kept only if no already-selected neighbour is closer to it than the base node is, with discarded candidates backfilling to the degree limit — and over-full nodes are re-pruned by the same rule. Indexes serialise to a flat binary file behind a magic number, and `load` restores the graph without rebuilding.
+**`HnswIndex`** is a flat-array hierarchical graph. Layer 0 adjacency lives in a single `std::vector<InternalId>` of `max_neighbors_layer0` slots per node with a parallel degree array, so a neighbour walk is one indexed load rather than a pointer chase; upper layers are stored per-level in the same shape. Node levels are drawn from an exponential distribution using a seeded xorshift generator, making construction deterministic for a given seed and insertion order. Search descends greedily through the upper layers to find an entry point, then runs a best-first `search_layer` on layer 0 with two heaps bounded by `ef_search` and a visited list leased from a pool on the index; each list holds a 16-bit stamp per node, so starting a query clears it in O(1) by bumping the stamp. Edges are chosen by the relative-neighbourhood heuristic — a candidate is kept only if no already-selected neighbour is closer to it than the base node is, with discarded candidates backfilling to the degree limit — and over-full nodes are re-pruned by the same rule. Indexes serialise to a flat binary file behind a magic number, and `load` restores the graph without rebuilding.
 
-`search` is `const` and takes no locks, so concurrent queries against a finished index are safe — asserted for the flat index in the Catch2 suite and for HNSW in the pytest suite, both by checking that parallel queries reproduce the single-threaded results exactly. Insertion is single-threaded.
+`search` is `const`; on HNSW its only shared state is the visited-list pool, which it locks only to lease and return a list. Concurrent queries against a finished index are safe — asserted for the flat index in the Catch2 suite and for HNSW in the pytest suite, both by checking that parallel queries reproduce the single-threaded results exactly. Insertion is single-threaded.
 
 The Python module wraps both indexes with NumPy-aware conversion (float64 and non-contiguous inputs are accepted and converted), and releases the GIL around batch search, save, and load.
 
@@ -104,8 +121,8 @@ The Python module wraps both indexes with NumPy-aware conversion (float64 and no
 Everything in the search path:
 
 - the HNSW graph — level assignment, greedy descent, best-first layer search, the relative-neighbourhood neighbour-selection heuristic, and degree pruning
-- the flat-array adjacency layout and the binary save/load format
-- L2 and inner-product distance kernels (lane-blocked for auto-vectorisation in the flat index, scalar in HNSW)
+- the flat-array adjacency layout, the pooled version-stamped visited list, and the binary save/load format
+- L2 and inner-product distance kernels, lane-blocked for compiler auto-vectorisation and shared by the flat and HNSW indexes
 - exhaustive search, k-selection, and deterministic tie-breaking by ascending label
 - the xorshift PRNG behind level assignment
 - the `.fvecs` / `.ivecs` readers, the benchmark harness, and the recall/QPS/RSS measurement

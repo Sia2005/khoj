@@ -53,7 +53,9 @@ PYTHONPATH=bench python bench/bench_faiss.py \
   --csv bench/results/faiss_hnsw.csv
 
 PYTHONPATH=bench python bench/plot_recall_qps.py \
-  bench/results/khoj_hnsw.csv \
+  khoj-hnsw-baseline=bench/results/khoj_hnsw.csv \
+  bench/results/khoj_hnsw_optimized.csv \
+  khoj-hnsw-native=bench/results/khoj_hnsw_optimized_native.csv \
   bench/results/faiss_hnsw.csv \
   bench/results/khoj_flat.csv \
   --out bench/results/recall_vs_qps

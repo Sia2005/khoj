@@ -11,15 +11,31 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-SERIES_ORDER = ["khoj-hnsw", "faiss-hnsw", "khoj-flat"]
+SERIES_ORDER = [
+    "khoj-hnsw",
+    "faiss-hnsw",
+    "khoj-flat",
+    "khoj-hnsw-baseline",
+    "khoj-hnsw-native",
+]
 
 SERIES_LABELS = {
     "khoj-hnsw": "khoj HNSW",
     "faiss-hnsw": "FAISS HNSW",
     "khoj-flat": "khoj flat (exact)",
+    "khoj-hnsw-baseline": "khoj HNSW, before optimization",
+    "khoj-hnsw-native": "khoj HNSW, -march=native (non-default build)",
 }
 
-SERIES_MARKERS = {"khoj-hnsw": "o", "faiss-hnsw": "s", "khoj-flat": "D"}
+SERIES_MARKERS = {
+    "khoj-hnsw": "o",
+    "faiss-hnsw": "s",
+    "khoj-flat": "D",
+    "khoj-hnsw-baseline": "v",
+    "khoj-hnsw-native": "^",
+}
+
+SERIES_LINESTYLES = {"khoj-hnsw-baseline": ":", "khoj-hnsw-native": "--"}
 
 THEMES = {
     "light": {
@@ -33,6 +49,8 @@ THEMES = {
             "khoj-hnsw": "#2a78d6",
             "faiss-hnsw": "#eb6834",
             "khoj-flat": "#1baf7a",
+            "khoj-hnsw-baseline": "#eda100",
+            "khoj-hnsw-native": "#e87ba4",
         },
     },
     "dark": {
@@ -46,16 +64,23 @@ THEMES = {
             "khoj-hnsw": "#3987e5",
             "faiss-hnsw": "#d95926",
             "khoj-flat": "#199e70",
+            "khoj-hnsw-baseline": "#c98500",
+            "khoj-hnsw-native": "#d55181",
         },
     },
 }
 
 
-def load_rows(paths: list[str]) -> list[dict[str, str]]:
+def load_rows(arguments: list[str]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for path in paths:
+    for argument in arguments:
+        series, separator, path = argument.partition("=")
+        if not separator:
+            series, path = "", argument
         with open(path, "r", newline="", encoding="utf-8") as handle:
-            rows.extend(csv.DictReader(handle))
+            for row in csv.DictReader(handle):
+                row["series"] = series or f"{row['engine']}-{row['index']}"
+                rows.append(row)
     if not rows:
         raise SystemExit("no rows found in the supplied CSV files")
     return rows
@@ -64,7 +89,7 @@ def load_rows(paths: list[str]) -> list[dict[str, str]]:
 def group_series(rows: list[dict[str, str]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        key = f"{row['engine']}-{row['index']}"
+        key = row["series"]
         if key not in SERIES_ORDER:
             raise SystemExit(
                 f"unmapped series {key}; add a validated colour slot before plotting it"
@@ -170,6 +195,7 @@ def render(
                 marker=SERIES_MARKERS[key],
                 markersize=8,
                 linewidth=2,
+                linestyle=SERIES_LINESTYLES.get(key, "-"),
                 color=colour,
                 markeredgecolor=theme["surface"],
                 markeredgewidth=2,
@@ -177,23 +203,37 @@ def render(
                 zorder=3,
             )
 
-        if key == "khoj-hnsw":
-            for point in points:
-                axes.annotate(
-                    point["ef_search"],
-                    (point["recall"], point["qps"]),
-                    textcoords="offset points",
-                    xytext=(0, 11),
-                    ha="center",
-                    fontsize=8.5,
-                    color=theme["muted"],
-                    zorder=4,
-                )
-
     all_recalls = [point["recall"] for points in grouped.values() for point in points]
     span = max(all_recalls) - min(all_recalls)
     padding = max(span * 0.06, 0.01)
     axes.set_xlim(min(all_recalls) - padding, max(all_recalls) + padding)
+    axes.autoscale_view(scalex=False)
+
+    # Every khoj HNSW variant shares one recall per ef_search, so a label above or
+    # below a point lands on another curve's marker. Labels go beside the point
+    # instead: right along gentle stretches, left where the curve falls steeply,
+    # and right of the final point.
+    labelled = grouped.get("khoj-hnsw", [])
+    for index, point in enumerate(labelled):
+        if index == len(labelled) - 1:
+            offset, ha, va = (7, 0), "left", "center"
+        else:
+            here = axes.transData.transform((point["recall"], point["qps"]))
+            following = labelled[index + 1]
+            there = axes.transData.transform((following["recall"], following["qps"]))
+            gentle = abs(there[1] - here[1]) < abs(there[0] - here[0])
+            offset, ha, va = ((7, 4), "left", "center") if gentle else ((-7, 0), "right", "center")
+        axes.annotate(
+            point["ef_search"],
+            (point["recall"], point["qps"]),
+            textcoords="offset points",
+            xytext=offset,
+            ha=ha,
+            va=va,
+            fontsize=8.5,
+            color=theme["muted"],
+            zorder=4,
+        )
 
     axes.set_xlabel(f"recall@{k}", color=theme["secondary"], fontsize=11, labelpad=8)
     axes.set_ylabel("queries per second", color=theme["secondary"], fontsize=11, labelpad=8)
@@ -240,7 +280,12 @@ def render(
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("csv", nargs="+")
+    parser.add_argument(
+        "csv",
+        nargs="+",
+        help="CSV path, optionally prefixed SERIES=path to override the "
+        "engine-index series key (e.g. khoj-hnsw-native=results.csv)",
+    )
     parser.add_argument("--out", default="bench/results/recall_vs_qps")
     return parser.parse_args()
 
