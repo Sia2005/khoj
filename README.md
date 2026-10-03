@@ -75,14 +75,16 @@ So khoj extracts more recall per unit of `ef_search`, and FAISS extracts more th
 
 Both HNSW indexes are worth their build cost against exhaustive search: at `ef_search`=40 khoj answers queries 174× faster than its own flat index for a 4.9-point recall trade. (The flat index was not re-run; the kernel change only moved its code.)
 
-## Filtered search
+## Metadata filtering
 
-`POST /search` restricts results by `documents` metadata in PostgreSQL (`owner_id`, and optionally `language` and `since`) with one of two strategies:
+Khoj combines vector similarity with SQL predicates on document metadata: the owner, and optionally the language and a creation-date lower bound. Each indexed vector has a row in a PostgreSQL `documents` table, joined to the HNSW index by `vector_id`. The FastAPI service in `service/` serves `POST /search`, which takes `owner_id`, the query vector, `k`, `ef_search`, and optional `language` and `since` filters. It uses psycopg 3 and raw SQL, with no ORM. You choose one of two strategies per request:
 
 - **`pre`** resolves the allowed `vector_id`s with SQL, then passes them to `HnswIndex.search` as `allowed_ids`. The graph walk visits every node it reaches but admits only allowed ones to the result set, so the graph stays connected however narrow the filter is.
 - **`post`** searches unfiltered for `k × post_widening` candidates (with `ef_search` raised to at least that many), then keeps the ones SQL confirms match.
 
-The SQL filter, the search, and the `search_log` insert run in one transaction. [`sql/README.md`](sql/README.md) has the schema, the local PostgreSQL setup, and why the `(owner_id, language, created_at)` index only helps a leftmost prefix.
+The SQL filter, the search, and the `search_log` insert run in one transaction. [`sql/README.md`](sql/README.md) has the schema and why the `(owner_id, language, created_at)` index only helps a leftmost prefix.
+
+The service and its tests run against a local PostgreSQL 16 instance (role, password and database all `khoj` on `localhost`) with `sql/schema.sql` applied. [`sql/README.md`](sql/README.md) has the setup commands and the `uvicorn` invocation.
 
 ### Selectivity crossover
 
@@ -97,11 +99,11 @@ SIFT-1M, 200 queries, `k` = 10, `ef_search` = 80, `post_widening` = 10, 1 thread
 
 ![recall@10 and latency of pre- and post-filtering across selectivities](bench/results/filter_selectivity.png)
 
-**Pre-filtering never wins on latency, and its recall advantage disappears between 10% and 50% selectivity.** Below that point, post-filtering's 100 candidates hold too few matches: an average of 1 hit out of k = 10 at 1% selectivity, and 8.5 at 10%. Pre-filtering stays at 0.9995 recall or better. From 50% up, both strategies fill all ten slots and sit within 0.6 points of each other, with post-filtering ahead at 90%. Post-filtering is faster at every selectivity: 19× at 1%, 40× at 10%, 107× at 50%, and 200× at 90%.
+**Post-filtering is 19–200× faster at every selectivity tested. Its recall falls off as filters get selective: 0.833 at 10% and 0.0995 at 1%.** Its 100 widened candidates are a fixed slice of the unfiltered neighbourhood, so a narrow filter leaves few matches in them: an average of 8.5 hits out of k = 10 at 10%, and 1 at 1%. Pre-filtering holds recall@10 at 0.989 or better at every selectivity. Its cost scales with the size of the allowed set: 46.7 ms p50 at 10,000 allowed documents, 104.7 ms at 100,000, 294.9 ms at 500,000, and 508.2 ms at 900,000. Post-filtering stays at 2.4–2.8 ms throughout. From 50% up the two strategies are within 0.6 recall points of each other, and post-filtering is ahead at 90%.
 
-Post-filtering's latency stays flat at 2.4–2.8 ms. Pre-filtering's grows roughly in step with the number of allowed documents, from 47 ms at 10,000 to 508 ms at 900,000. That points to the cost of producing the allowed set: `array_agg` in PostgreSQL, transferring it, and building a hash set of it for every query. The search itself is not the likely cost. No profile has been taken to split that time.
+The design rule that follows: **pre-filter for selective queries, post-filter above 50%.** Between 10% and 50% the run has no sample points. Where the crossover falls in that range depends on how much recall a caller will give up, and on `post_widening`, which was fixed at 10 here.
 
-So with this implementation, use `pre` for selective filters (≤10%), where post-filtering loses most of its recall, and use `post` for broad ones. The table doesn't pin the crossover any closer than "between 10% and 50%".
+Pre-filtering's cost is most likely dominated by fetching the allowed id set from PostgreSQL (`array_agg` over every matching row, then the transfer) and by rebuilding a hash set of it on every query, not by the graph search. Its latency grows almost linearly with the number of allowed documents. That fits per-id work. The graph walk moves the other way: a wider filter means fewer disallowed nodes to cross before `ef_search` allowed ones are found. **This has not been profiled to confirm it.** No measurement splits SQL time from search time.
 
 Source: [`bench/results/filter_selectivity.csv`](bench/results/filter_selectivity.csv), which also holds p95s, QPS min/max, and the process RSS of 1.22 GiB. [`bench/README.md`](bench/README.md) has the command line.
 
@@ -137,8 +139,9 @@ Reproducing the benchmarks — including where to get SIFT-1M and how to generat
 include/khoj/     public headers — types, flat_index, hnsw_index
 src/              flat_index.cpp, hnsw_index.cpp        (khoj_core, static)
 python/           bindings.cpp                          (pybind11 module `khoj`)
-service/          FastAPI application, POST /search     (psycopg 3, raw SQL)
-sql/              schema.sql, index notes
+service/          app.py (POST /search), search.py (strategies, transaction),
+                  filtering.py (SQL predicates), models.py (request/response)
+sql/              schema.sql, explain_prefix.sql, index and setup notes
 bench/            harness, FAISS baseline, filter benchmark, plotting
 tests/            Catch2 for C++, pytest for the bindings and the service
 ```
@@ -165,6 +168,8 @@ Everything in the search path:
 - exhaustive search, k-selection, and deterministic tie-breaking by ascending label
 - the xorshift PRNG behind level assignment
 - the `.fvecs` / `.ivecs` readers, the benchmark harness, and the recall/QPS/RSS measurement
+- the PostgreSQL schema (`owners`, `documents`, `search_log`) and the composite `(owner_id, language, created_at)` index, as raw DDL
+- the filtering queries, the pre- and post-filter strategies, and the filtered-search benchmark with restricted brute-force ground truth
 
 No FAISS, hnswlib, nmslib, Annoy, or ScaNN anywhere in the engine. FAISS appears only in `bench/` as a comparison baseline and is never called by the index. Third-party code is limited to pybind11 (bindings); FastAPI, psycopg 3 and psycopg-pool (service, raw SQL with no ORM); Catch2, pytest and httpx (tests); and NumPy, faiss and matplotlib (benchmark harness only).
 
