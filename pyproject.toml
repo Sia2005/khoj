@@ -1,0 +1,24 @@
+[build-system]
+requires = ["scikit-build-core>=0.8"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "khoj"
+version = "0.1.0"
+description = "From-scratch C++17 vector search engine (HNSW + exact flat) with pybind11 bindings"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.scikit-build]
+cmake.version = ">=3.24"
+# Only the pybind11 extension is needed for the installed package; the
+# Catch2 C++ test suite and the C++ benchmark exe are dev-only targets and
+# skipping them keeps the wheel build fast and network-light (no Catch2
+# FetchContent). pybind11 is still fetched unless a cached source dir is
+# passed via -DFETCHCONTENT_SOURCE_DIR_PYBIND11 at install time.
+cmake.args = [
+    "-DKHOJ_BUILD_TESTS=OFF",
+    "-DKHOJ_BUILD_BENCH=OFF",
+    "-DKHOJ_BUILD_PYTHON=ON",
+]
+wheel.py-api = "cp312"

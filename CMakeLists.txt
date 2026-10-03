@@ -74,6 +74,11 @@ if(KHOJ_BUILD_PYTHON)
     pybind11_add_module(khoj_bindings python/bindings.cpp)
     set_target_properties(khoj_bindings PROPERTIES OUTPUT_NAME khoj)
     target_link_libraries(khoj_bindings PRIVATE khoj::core)
+
+    # Install rule consumed by scikit-build-core when building a wheel
+    # (pip install .). Places the extension at the wheel root so `import
+    # khoj` resolves. Harmless to a plain `cmake --build` (install-only).
+    install(TARGETS khoj_bindings LIBRARY DESTINATION . COMPONENT python)
 endif()
 
 if(KHOJ_BUILD_TESTS)
