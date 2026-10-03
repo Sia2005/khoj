@@ -63,6 +63,39 @@ PYTHONPATH=bench python bench/plot_recall_qps.py \
 
 Build in Release. A Debug build makes every timing number meaningless.
 
+## Filtered search
+
+`bench_filter.py` measures the service's two filtering strategies, `pre` and `post`, at several filter selectivities. It needs the service dependencies (`pip install -e '.[test]'` covers them) and PostgreSQL. It connects to `postgresql://khoj:khoj@localhost:5432/khoj` unless you pass `--database-url`, and works in a scratch schema that it creates and drops (see [`sql/README.md`](../sql/README.md) for the local setup).
+
+```
+PYTHONPATH=bench python bench/bench_filter.py \
+  --base data/sift/sift_base.fvecs \
+  --query data/sift/sift_query.fvecs \
+  --dataset sift1m --query-count 200 --runs 5 \
+  --k 10 --ef-search 80 --post-widening 10 \
+  --selectivities 0.01,0.1,0.5,0.9 \
+  --index-cache data/sift/sift1m.hnsw \
+  --csv bench/results/filter_selectivity.csv \
+  --plot bench/results/filter_selectivity
+```
+
+What it does:
+
+- Builds the HNSW index once with labels equal to row numbers, and saves it to `--index-cache` so later runs load it instead of rebuilding.
+- Loads one `documents` row per vector, all owned by one owner in one language. Each row gets a distinct `created_at` from a seeded random permutation, so the filter is uncorrelated with where the vector sits in space.
+- Picks each selectivity *s* by setting `since` so that exactly round(*s*·N) documents pass. That filter pins the full `(owner_id, language, created_at)` prefix, so PostgreSQL range-scans only the matching entries.
+- Computes ground truth by exact brute force over only the allowed vectors, in float64, for every selectivity.
+- Calls the service's own `run_search` on one connection from one thread, so each query runs the same transaction as `POST /search`: the SQL filter, the HNSW search, and the `search_log` insert and commit. HTTP is the only part left out.
+
+It reports two latencies:
+
+- `strategy_*_ms` is the service's own measurement: SQL filtering plus HNSW search, inside the transaction.
+- `end_to_end_*_ms` adds the owner check, the log insert, and the durable commit. The commit costs the same for both strategies and is dominated by WAL fsync on the machine running PostgreSQL.
+
+`qps_*` is derived from end-to-end time. Every figure is the median of `--runs` passes over the same queries, and `recall_at_k` must be identical across passes or the script stops. `index_rss_bytes` is the process's resident memory right after the index is built or loaded, before the ground-truth buffers are allocated.
+
+`plot_filter.py` re-renders the plot from a CSV without re-running anything.
+
 ## Smoke testing without SIFT
 
 `make_synthetic.py` writes clustered Gaussian vectors in the same two formats so

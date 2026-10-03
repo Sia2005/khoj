@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "khoj/flat_index.hpp"
@@ -155,6 +156,38 @@ khoj::HnswIndex make_hnsw_index(std::size_t dimension,
     return khoj::HnswIndex(params);
 }
 
+using AllowedIds = std::optional<std::unordered_set<std::uint64_t>>;
+
+AllowedIds allowed_ids_from(const py::object& allowed_ids) {
+    if (allowed_ids.is_none()) {
+        return std::nullopt;
+    }
+
+    std::unordered_set<std::uint64_t> allowed;
+    if (py::isinstance<py::array>(allowed_ids)) {
+        const LabelArray labels = LabelArray::ensure(allowed_ids);
+        if (!labels || labels.ndim() != 1) {
+            throw std::invalid_argument("allowed_ids expects a one-dimensional array of labels");
+        }
+        allowed.reserve(static_cast<std::size_t>(labels.shape(0)));
+        allowed.insert(labels.data(), labels.data() + labels.shape(0));
+        return allowed;
+    }
+
+    for (const py::handle label : py::iterable(allowed_ids)) {
+        allowed.insert(label.cast<std::uint64_t>());
+    }
+    return allowed;
+}
+
+khoj::LabelFilter membership_filter(const AllowedIds& allowed) {
+    if (!allowed.has_value()) {
+        return {};
+    }
+    const std::unordered_set<std::uint64_t>* const members = &*allowed;
+    return [members](std::uint64_t label) { return members->count(label) != 0; };
+}
+
 void hnsw_add(khoj::HnswIndex& index, std::uint64_t label, const FloatArray& vector) {
     index.add(label, single_vector(vector, index.dimension(), "add"));
 }
@@ -195,19 +228,23 @@ void hnsw_add_batch(khoj::HnswIndex& index,
 std::vector<khoj::SearchResult> hnsw_search(const khoj::HnswIndex& index,
                                             const FloatArray& query,
                                             std::size_t k,
-                                            std::size_t ef_search) {
+                                            std::size_t ef_search,
+                                            const py::object& allowed_ids) {
     const float* const values = single_vector(query, index.dimension(), "search");
+    const AllowedIds allowed = allowed_ids_from(allowed_ids);
 
     const py::gil_scoped_release release;
-    return index.search(values, k, ef_search);
+    return index.search(values, k, ef_search, membership_filter(allowed));
 }
 
 py::tuple hnsw_search_batch(const khoj::HnswIndex& index,
                             const FloatArray& queries,
                             std::size_t k,
-                            std::size_t ef_search) {
+                            std::size_t ef_search,
+                            const py::object& allowed_ids) {
     const std::size_t dimension = index.dimension();
     const std::size_t rows = row_count(queries, dimension, "search_batch");
+    const AllowedIds allowed = allowed_ids_from(allowed_ids);
 
     py::array_t<std::uint64_t> labels = make_matrix<std::uint64_t>(rows, k);
     py::array_t<float> distances = make_matrix<float>(rows, k);
@@ -222,8 +259,9 @@ py::tuple hnsw_search_batch(const khoj::HnswIndex& index,
 
     {
         const py::gil_scoped_release release;
+        const khoj::LabelFilter filter = membership_filter(allowed);
         for (std::size_t row = 0; row < rows; ++row) {
-            write_row(index.search(query_values + row * dimension, k, ef_search), k, missing,
+            write_row(index.search(query_values + row * dimension, k, ef_search, filter), k, missing,
                       label_data + row * k, distance_data + row * k);
         }
     }
@@ -282,8 +320,10 @@ PYBIND11_MODULE(khoj, m) {
         .def("reserve", &khoj::HnswIndex::reserve, py::arg("expected_elements"))
         .def("add", &hnsw_add, py::arg("label"), py::arg("vector"))
         .def("add_batch", &hnsw_add_batch, py::arg("vectors"), py::arg("labels") = py::none())
-        .def("search", &hnsw_search, py::arg("query"), py::arg("k"), py::arg("ef_search"))
-        .def("search_batch", &hnsw_search_batch, py::arg("queries"), py::arg("k"), py::arg("ef_search"))
+        .def("search", &hnsw_search, py::arg("query"), py::arg("k"), py::arg("ef_search"),
+             py::arg("allowed_ids") = py::none())
+        .def("search_batch", &hnsw_search_batch, py::arg("queries"), py::arg("k"), py::arg("ef_search"),
+             py::arg("allowed_ids") = py::none())
         .def("save", &khoj::HnswIndex::save, py::arg("path"), py::call_guard<py::gil_scoped_release>())
         .def_static("load", &khoj::HnswIndex::load, py::arg("path"),
                     py::call_guard<py::gil_scoped_release>())

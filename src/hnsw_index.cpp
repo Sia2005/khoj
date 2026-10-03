@@ -106,7 +106,9 @@ void HnswIndex::set_degree(InternalId id, std::size_t layer, std::uint32_t value
 std::vector<HnswIndex::Candidate> HnswIndex::search_layer(const float* query,
                                                           const std::vector<InternalId>& entry_points,
                                                           std::size_t ef,
-                                                          std::size_t layer) const {
+                                                          std::size_t layer,
+                                                          const LabelFilter* allowed) const {
+    const auto admits = [this, allowed](InternalId id) { return allowed == nullptr || (*allowed)(labels_[id]); };
     const auto nearer = [](const Candidate& a, const Candidate& b) { return a.distance > b.distance; };
     const auto farther = [](const Candidate& a, const Candidate& b) { return a.distance < b.distance; };
 
@@ -117,7 +119,9 @@ std::vector<HnswIndex::Candidate> HnswIndex::search_layer(const float* query,
     for (const InternalId entry : entry_points) {
         const float distance = distance_to_stored(query, entry);
         candidates.push({distance, entry});
-        results.push({distance, entry});
+        if (admits(entry)) {
+            results.push({distance, entry});
+        }
         visited->mark(entry);
     }
 
@@ -143,9 +147,11 @@ std::vector<HnswIndex::Candidate> HnswIndex::search_layer(const float* query,
             const float distance = distance_to_stored(query, neighbor);
             if (results.size() < ef || distance < results.top().distance) {
                 candidates.push({distance, neighbor});
-                results.push({distance, neighbor});
-                if (results.size() > ef) {
-                    results.pop();
+                if (admits(neighbor)) {
+                    results.push({distance, neighbor});
+                    if (results.size() > ef) {
+                        results.pop();
+                    }
                 }
             }
         }
@@ -333,7 +339,10 @@ void HnswIndex::add(std::uint64_t label, const float* vector) {
     }
 }
 
-std::vector<SearchResult> HnswIndex::search(const float* query, std::size_t k, std::size_t ef_search) const {
+std::vector<SearchResult> HnswIndex::search(const float* query,
+                                            std::size_t k,
+                                            std::size_t ef_search,
+                                            const LabelFilter& allowed) const {
     if (element_count_ == 0 || k == 0) {
         return {};
     }
@@ -345,7 +354,8 @@ std::vector<SearchResult> HnswIndex::search(const float* query, std::size_t k, s
         current_entry = greedy_descend(query, current_entry, layer);
     }
 
-    const std::vector<Candidate> found = search_layer(query, {current_entry}, ef, 0);
+    const LabelFilter* const filter = allowed ? &allowed : nullptr;
+    const std::vector<Candidate> found = search_layer(query, {current_entry}, ef, 0, filter);
 
     std::vector<SearchResult> results;
     const std::size_t count = std::min(k, found.size());

@@ -358,3 +358,109 @@ def test_distances_are_squared_l2_for_an_indexed_vector() -> None:
     _, distances = index.search_batch(vectors[:1], k=1, ef_search=32)
 
     assert math.isclose(float(distances[0, 0]), 0.0, abs_tol=1e-6)
+
+
+def restricted_exact_labels(
+    vectors: np.ndarray, queries: np.ndarray, allowed: np.ndarray, k: int
+) -> np.ndarray:
+    subset = vectors[allowed]
+    squared = ((queries[:, None, :] - subset[None, :, :]) ** 2).sum(axis=2)
+    order = np.argsort(squared, axis=1, kind="stable")[:, :k]
+    return allowed[order].astype(np.uint64)
+
+
+@pytest.mark.parametrize("fraction", [0.01, 0.1, 0.5, 0.9])
+def test_filtered_search_batch_matches_restricted_brute_force(fraction: float) -> None:
+    vectors = sample_vectors(2000, seed=91)
+    queries = sample_vectors(50, seed=92)
+    generator = np.random.default_rng(93)
+    allowed = np.flatnonzero(generator.random(len(vectors)) < fraction).astype(np.uint64)
+
+    labels, _ = hnsw_index(vectors).search_batch(
+        queries, k=10, ef_search=100, allowed_ids=allowed
+    )
+    expected = restricted_exact_labels(vectors, queries, allowed, k=10)
+
+    returned = labels[labels != MISSING_LABEL]
+    assert np.isin(returned, allowed).all()
+    hits = sum(len(set(row) & set(truth)) for row, truth in zip(labels, expected))
+    assert hits / expected.size >= 0.95
+
+
+@pytest.mark.parametrize(
+    "as_container",
+    [
+        set,
+        list,
+        tuple,
+        frozenset,
+        lambda ids: np.array(ids, dtype=np.uint64),
+        lambda ids: np.array(ids, dtype=np.int64),
+    ],
+    ids=["set", "list", "tuple", "frozenset", "uint64-array", "int64-array"],
+)
+def test_allowed_ids_accepts_any_iterable_of_labels(as_container) -> None:
+    vectors = sample_vectors(COUNT)
+    index = hnsw_index(vectors)
+    allowed = [3, 17, 42, 99, 200]
+
+    results = index.search(vectors[42], k=10, ef_search=32, allowed_ids=as_container(allowed))
+
+    assert results[0].label == 42
+    assert sorted(result.label for result in results) == allowed
+
+
+def test_no_allowed_ids_means_no_filter() -> None:
+    vectors = sample_vectors(COUNT)
+    queries = sample_vectors(8, seed=94)
+    index = hnsw_index(vectors)
+
+    unfiltered = index.search_batch(queries, k=10, ef_search=64)
+    explicit_none = index.search_batch(queries, k=10, ef_search=64, allowed_ids=None)
+
+    np.testing.assert_array_equal(explicit_none[0], unfiltered[0])
+    np.testing.assert_array_equal(explicit_none[1], unfiltered[1])
+
+
+def test_an_empty_allowed_set_pads_every_slot() -> None:
+    vectors = sample_vectors(COUNT)
+    index = hnsw_index(vectors)
+
+    labels, distances = index.search_batch(vectors[:2], k=5, ef_search=32, allowed_ids=set())
+
+    assert (labels == MISSING_LABEL).all()
+    assert np.isinf(distances).all()
+    assert index.search(vectors[0], k=5, ef_search=32, allowed_ids=[]) == []
+
+
+def test_allowed_ids_rejects_negative_and_two_dimensional_labels() -> None:
+    vectors = sample_vectors(COUNT)
+    index = hnsw_index(vectors)
+
+    with pytest.raises((TypeError, ValueError, RuntimeError)):
+        index.search(vectors[0], k=5, ef_search=32, allowed_ids=[-1])
+    with pytest.raises(ValueError, match="one-dimensional"):
+        index.search(vectors[0], k=5, ef_search=32, allowed_ids=np.zeros((2, 2), dtype=np.uint64))
+
+
+def test_parallel_filtered_queries_match_the_single_threaded_run() -> None:
+    vectors = sample_vectors(4000, seed=64)
+    queries = sample_vectors(200, seed=65)
+    index = hnsw_index(vectors)
+    allowed = np.arange(0, 4000, 7, dtype=np.uint64)
+
+    expected = index.search_batch(queries, k=10, ef_search=100, allowed_ids=allowed)
+    results: list[tuple[np.ndarray, np.ndarray]] = [(np.empty(0), np.empty(0))] * 4
+
+    def worker(slot: int) -> None:
+        results[slot] = index.search_batch(queries, k=10, ef_search=100, allowed_ids=allowed)
+
+    workers = [threading.Thread(target=worker, args=(slot,)) for slot in range(4)]
+    for thread in workers:
+        thread.start()
+    for thread in workers:
+        thread.join()
+
+    for labels, distances in results:
+        np.testing.assert_array_equal(labels, expected[0])
+        np.testing.assert_array_equal(distances, expected[1])

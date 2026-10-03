@@ -8,6 +8,11 @@ version = "0.1.0"
 description = "From-scratch C++17 vector search engine (HNSW + exact flat) with pybind11 bindings"
 readme = "README.md"
 requires-python = ">=3.12"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+service = ["fastapi", "uvicorn", "psycopg[binary]>=3.1", "psycopg-pool"]
+test = ["pytest", "httpx", "khoj[service]"]
 
 [tool.scikit-build]
 cmake.version = ">=3.24"

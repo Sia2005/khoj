@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,8 @@
 #include "khoj/visited_list_pool.hpp"
 
 namespace khoj {
+
+using LabelFilter = std::function<bool(std::uint64_t)>;
 
 struct HnswParams {
     std::size_t dimension = 0;
@@ -27,7 +30,10 @@ public:
     void reserve(std::size_t expected_elements);
     void add(std::uint64_t label, const float* vector);
 
-    std::vector<SearchResult> search(const float* query, std::size_t k, std::size_t ef_search) const;
+    std::vector<SearchResult> search(const float* query,
+                                     std::size_t k,
+                                     std::size_t ef_search,
+                                     const LabelFilter& allowed = {}) const;
 
     std::size_t size() const { return element_count_; }
     std::size_t dimension() const { return params_.dimension; }
@@ -56,7 +62,8 @@ private:
     std::vector<Candidate> search_layer(const float* query,
                                         const std::vector<InternalId>& entry_points,
                                         std::size_t ef,
-                                        std::size_t layer) const;
+                                        std::size_t layer,
+                                        const LabelFilter* allowed = nullptr) const;
 
     std::vector<InternalId> select_neighbors_heuristic(const float* base,
                                                        std::vector<Candidate> candidates,

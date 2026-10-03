@@ -1,0 +1,15 @@
+loaded 1000000 base and 200 query vectors
+built hnsw over 1000000 vectors in 2029.9s
+computed restricted ground truth
+loaded 1000000 documents into postgres
+  pre  selectivity=0.01  recall@10=1.0000 strategy_p50=46.71ms end_to_end_p50=51.08ms qps=19.6
+  post selectivity=0.01  recall@10=0.0995 strategy_p50=2.45ms end_to_end_p50=5.47ms qps=170.8
+  pre  selectivity=0.1   recall@10=0.9995 strategy_p50=104.71ms end_to_end_p50=109.52ms qps=8.9
+  post selectivity=0.1   recall@10=0.8330 strategy_p50=2.58ms end_to_end_p50=6.03ms qps=159.2
+  pre  selectivity=0.5   recall@10=0.9950 strategy_p50=294.92ms end_to_end_p50=304.53ms qps=3.2
+  post selectivity=0.5   recall@10=0.9890 strategy_p50=2.76ms end_to_end_p50=6.80ms qps=140.4
+  pre  selectivity=0.9   recall@10=0.9890 strategy_p50=508.18ms end_to_end_p50=518.53ms qps=1.9
+  post selectivity=0.9   recall@10=0.9905 strategy_p50=2.54ms end_to_end_p50=5.67ms qps=166.5
+wrote bench/results/filter_selectivity.csv
+wrote bench/results/filter_selectivity.png
+wrote bench/results/filter_selectivity_dark.png

@@ -75,6 +75,36 @@ So khoj extracts more recall per unit of `ef_search`, and FAISS extracts more th
 
 Both HNSW indexes are worth their build cost against exhaustive search: at `ef_search`=40 khoj answers queries 174× faster than its own flat index for a 4.9-point recall trade. (The flat index was not re-run; the kernel change only moved its code.)
 
+## Filtered search
+
+`POST /search` restricts results by `documents` metadata in PostgreSQL (`owner_id`, and optionally `language` and `since`) with one of two strategies:
+
+- **`pre`** resolves the allowed `vector_id`s with SQL, then passes them to `HnswIndex.search` as `allowed_ids`. The graph walk visits every node it reaches but admits only allowed ones to the result set, so the graph stays connected however narrow the filter is.
+- **`post`** searches unfiltered for `k × post_widening` candidates (with `ef_search` raised to at least that many), then keeps the ones SQL confirms match.
+
+The SQL filter, the search, and the `search_log` insert run in one transaction. [`sql/README.md`](sql/README.md) has the schema, the local PostgreSQL setup, and why the `(owner_id, language, created_at)` index only helps a leftmost prefix.
+
+### Selectivity crossover
+
+SIFT-1M, 200 queries, `k` = 10, `ef_search` = 80, `post_widening` = 10, 1 thread, median of 5 runs. Recall is against exact brute force over only the allowed vectors. The filter is uncorrelated with vector position. Latency is the median time for the SQL filter plus the HNSW search. End-to-end latency also includes the owner check, the log insert, and the durable commit. Both are measured against local PostgreSQL 16 on the same host.
+
+| Selectivity | Allowed docs | pre recall@10 | post recall@10 | pre p50 | post p50 | pre end-to-end p50 | post end-to-end p50 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1% | 10,000 | **1.0000** | 0.0995 | 46.7 ms | **2.4 ms** | 51.1 ms | **5.5 ms** |
+| 10% | 100,000 | **0.9995** | 0.8330 | 104.7 ms | **2.6 ms** | 109.5 ms | **6.0 ms** |
+| 50% | 500,000 | **0.9950** | 0.9890 | 294.9 ms | **2.8 ms** | 304.5 ms | **6.8 ms** |
+| 90% | 900,000 | 0.9890 | **0.9905** | 508.2 ms | **2.5 ms** | 518.5 ms | **5.7 ms** |
+
+![recall@10 and latency of pre- and post-filtering across selectivities](bench/results/filter_selectivity.png)
+
+**Pre-filtering never wins on latency, and its recall advantage disappears between 10% and 50% selectivity.** Below that point, post-filtering's 100 candidates hold too few matches: an average of 1 hit out of k = 10 at 1% selectivity, and 8.5 at 10%. Pre-filtering stays at 0.9995 recall or better. From 50% up, both strategies fill all ten slots and sit within 0.6 points of each other, with post-filtering ahead at 90%. Post-filtering is faster at every selectivity: 19× at 1%, 40× at 10%, 107× at 50%, and 200× at 90%.
+
+Post-filtering's latency stays flat at 2.4–2.8 ms. Pre-filtering's grows roughly in step with the number of allowed documents, from 47 ms at 10,000 to 508 ms at 900,000. That points to the cost of producing the allowed set: `array_agg` in PostgreSQL, transferring it, and building a hash set of it for every query. The search itself is not the likely cost. No profile has been taken to split that time.
+
+So with this implementation, use `pre` for selective filters (≤10%), where post-filtering loses most of its recall, and use `post` for broad ones. The table doesn't pin the crossover any closer than "between 10% and 50%".
+
+Source: [`bench/results/filter_selectivity.csv`](bench/results/filter_selectivity.csv), which also holds p95s, QPS min/max, and the process RSS of 1.22 GiB. [`bench/README.md`](bench/README.md) has the command line.
+
 ## Build
 
 Requires CMake ≥ 3.24, a C++17 compiler, and a Python interpreter with development headers for the bindings (3.12 here). Catch2 and pybind11 are fetched by CMake at configure time.
@@ -88,7 +118,13 @@ Anything that produces a timing number must be a Release build; Debug is roughly
 
 ```sh
 ctest --test-dir build --output-on-failure   # C++ suite (Catch2)
-pytest tests/                                # Python bindings (pytest)
+pytest tests/                                # bindings and service (pytest)
+```
+
+The service tests need PostgreSQL 16. They connect to `postgresql://khoj:khoj@localhost:5432/khoj` unless `KHOJ_TEST_DATABASE_URL` says otherwise, and skip if the server is unreachable. Each session works in its own scratch schema and drops it afterwards. [`sql/README.md`](sql/README.md) covers the local setup.
+
+```sh
+pip install -e '.[test]'                     # service dependencies plus pytest and httpx
 ```
 
 Build options, all defaulting on except the last: `KHOJ_BUILD_TESTS`, `KHOJ_BUILD_PYTHON`, `KHOJ_BUILD_BENCH`, and `KHOJ_NATIVE_ARCH` (off — set it to compile with `-march=native`; it changes timing numbers, so state it whenever you report one).
@@ -101,9 +137,10 @@ Reproducing the benchmarks — including where to get SIFT-1M and how to generat
 include/khoj/     public headers — types, flat_index, hnsw_index
 src/              flat_index.cpp, hnsw_index.cpp        (khoj_core, static)
 python/           bindings.cpp                          (pybind11 module `khoj`)
-service/          FastAPI application                   (not yet implemented)
-bench/            harness, FAISS baseline, plotting
-tests/            Catch2 for C++, pytest for the bindings
+service/          FastAPI application, POST /search     (psycopg 3, raw SQL)
+sql/              schema.sql, index notes
+bench/            harness, FAISS baseline, filter benchmark, plotting
+tests/            Catch2 for C++, pytest for the bindings and the service
 ```
 
 `khoj_core` is a static library with no dependencies beyond the standard library and `Threads::Threads`. Everything above it is optional and can be switched off at configure time.
@@ -112,9 +149,11 @@ tests/            Catch2 for C++, pytest for the bindings
 
 **`HnswIndex`** is a flat-array hierarchical graph. Layer 0 adjacency lives in a single `std::vector<InternalId>` of `max_neighbors_layer0` slots per node with a parallel degree array, so a neighbour walk is one indexed load rather than a pointer chase; upper layers are stored per-level in the same shape. Node levels are drawn from an exponential distribution using a seeded xorshift generator, making construction deterministic for a given seed and insertion order. Search descends greedily through the upper layers to find an entry point, then runs a best-first `search_layer` on layer 0 with two heaps bounded by `ef_search` and a visited list leased from a pool on the index; each list holds a 16-bit stamp per node, so starting a query clears it in O(1) by bumping the stamp. Edges are chosen by the relative-neighbourhood heuristic — a candidate is kept only if no already-selected neighbour is closer to it than the base node is, with discarded candidates backfilling to the degree limit — and over-full nodes are re-pruned by the same rule. Indexes serialise to a flat binary file behind a magic number, and `load` restores the graph without rebuilding.
 
-`search` is `const`; on HNSW its only shared state is the visited-list pool, which it locks only to lease and return a list. Concurrent queries against a finished index are safe — asserted for the flat index in the Catch2 suite and for HNSW in the pytest suite, both by checking that parallel queries reproduce the single-threaded results exactly. Insertion is single-threaded.
+`search` takes an optional label filter. It applies only when a node would enter the result heap: every reached node is still visited, measured, and pushed onto the frontier, so the walk crosses disallowed regions and the graph stays connected. The admission bound is the worst *allowed* result, so a selective filter keeps the search expanding until it has `ef_search` allowed candidates or runs out of graph. Without a filter, search and construction run exactly as before.
 
-The Python module wraps both indexes with NumPy-aware conversion (float64 and non-contiguous inputs are accepted and converted), and releases the GIL around batch search, save, and load.
+`search` is `const`; on HNSW its only shared state is the visited-list pool, which it locks only to lease and return a list. Concurrent queries against a finished index are safe — asserted for the flat index and for filtered HNSW search in the Catch2 suite, and for HNSW with and without a filter in the pytest suite, all by checking that parallel queries reproduce the single-threaded results exactly. Insertion is single-threaded.
+
+The Python module wraps both indexes with NumPy-aware conversion (float64 and non-contiguous inputs are accepted and converted), and releases the GIL around batch search, save, and load. HNSW `search` and `search_batch` take an optional `allowed_ids` (any iterable of labels, or a NumPy integer array), copied into a hash set before the GIL is released.
 
 ## Written from scratch
 
@@ -127,6 +166,6 @@ Everything in the search path:
 - the xorshift PRNG behind level assignment
 - the `.fvecs` / `.ivecs` readers, the benchmark harness, and the recall/QPS/RSS measurement
 
-No FAISS, hnswlib, nmslib, Annoy, or ScaNN anywhere in the engine. FAISS appears only in `bench/` as a comparison baseline and is never called by the index. Third-party code is limited to pybind11 (bindings), Catch2 and pytest (tests), and NumPy, faiss and matplotlib (benchmark harness only).
+No FAISS, hnswlib, nmslib, Annoy, or ScaNN anywhere in the engine. FAISS appears only in `bench/` as a comparison baseline and is never called by the index. Third-party code is limited to pybind11 (bindings); FastAPI, psycopg 3 and psycopg-pool (service, raw SQL with no ORM); Catch2, pytest and httpx (tests); and NumPy, faiss and matplotlib (benchmark harness only).
 
-Not yet implemented: quantization, deletion or update of indexed vectors, multi-threaded index construction, and the FastAPI service.
+Not yet implemented: quantization, deletion or update of indexed vectors, multi-threaded index construction, and keeping the HNSW index in step with `documents` (the service loads a saved index at startup and trusts `vector_id` to match its labels).
